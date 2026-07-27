@@ -1,5 +1,8 @@
 {
   "projects": {
-    "default": "albayyan-school-app"
-  }
+    "default": "albayyan-school-app",
+    "dbms": "albayyandbms1"
+  },
+  "targets": {},
+  "etags": {}
 }

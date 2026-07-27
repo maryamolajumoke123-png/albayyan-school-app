@@ -4,7 +4,7 @@ import './AdminDashboard.css';
 import ReceiptModal from './ReceiptModal';
 import SchoolHeader from './SchoolHeader';
 import { exportStudentsToExcel, parseStudentsFromExcel, downloadExcelTemplate, parsePaymentCollectionExcel, downloadPaymentCollectionTemplate } from './utils/excelUtils';
-import { getApiUrl, logout } from './utils/supabaseClient';
+import { getApiUrl, logout, getDashboardFallbackData } from './utils/supabaseClient';
 import { sendPaymentReceivedNotification } from './utils/notificationService';
 import { generateInvoicePDF, generatePaymentReceiptPDF, generateDebtorsReportPDF, generateAnalyticsReportPDF, generateFinancialSummaryPDF } from './utils/pdfService';
 

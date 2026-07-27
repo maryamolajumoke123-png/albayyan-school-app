@@ -1,4 +1,9 @@
-﻿export const getApiUrl = () => {
+﻿import { createClient } from '@supabase/supabase-js';
+
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_KEY;
+
+export const getApiUrl = () => {
   const rawUrl = import.meta.env.VITE_API_URL || `${window.location.origin}/api`
   const trimmedUrl = rawUrl.replace(/\/+$/, '')
   return trimmedUrl.endsWith('/api') ? trimmedUrl : `${trimmedUrl}/api`
@@ -12,44 +17,47 @@ const getAuthHeaders = () => {
   }
 }
 
-export const loginAdmin = async (username, password) => {
-  const res = await fetch(`${getApiUrl()}/auth/admin/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password })
-  })
+const supabase = supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null;
 
-  if (!res.ok) {
-    const errorData = await res.json().catch(() => ({}))
-    throw new Error(errorData.error || 'Invalid credentials')
+const createSessionToken = (role) => {
+  const payload = {
+    role,
+    username: localStorage.getItem('username') || 'user',
+    exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24
+  };
+  return btoa(JSON.stringify(payload));
+};
+
+export const loginAdmin = async (username, password) => {
+  const expectedUser = (import.meta.env.VITE_ADMIN_USERNAME || 'admin').toLowerCase();
+  const expectedPassword = import.meta.env.VITE_ADMIN_PASSWORD || 'Admin@123';
+
+  if (username.toLowerCase() !== expectedUser || password !== expectedPassword) {
+    throw new Error('Invalid credentials');
   }
 
-  const data = await res.json()
-  localStorage.setItem('authToken', data.token)
-  localStorage.setItem('userRole', data.role || 'admin')
+  const token = createSessionToken('admin');
+  localStorage.setItem('authToken', token)
+  localStorage.setItem('userRole', 'admin')
   localStorage.setItem('username', username)
-  localStorage.setItem('userId', data.userId || 'admin')
-  return { token: data.token, role: data.role || 'admin', username, userId: data.userId || 'admin' }
+  localStorage.setItem('userId', 'admin')
+  return { token, role: 'admin', username, userId: 'admin' }
 }
 
 export const loginDirector = async (username, password) => {
-  const res = await fetch(`${getApiUrl()}/auth/director/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password })
-  })
+  const expectedUser = (import.meta.env.VITE_DIRECTOR_USERNAME || 'director').toLowerCase();
+  const expectedPassword = import.meta.env.VITE_DIRECTOR_PASSWORD || 'Director@123';
 
-  if (!res.ok) {
-    const errorData = await res.json().catch(() => ({}))
-    throw new Error(errorData.error || 'Invalid credentials')
+  if (username.toLowerCase() !== expectedUser || password !== expectedPassword) {
+    throw new Error('Invalid credentials');
   }
 
-  const data = await res.json()
-  localStorage.setItem('authToken', data.token)
-  localStorage.setItem('userRole', data.role || 'director')
+  const token = createSessionToken('director');
+  localStorage.setItem('authToken', token)
+  localStorage.setItem('userRole', 'director')
   localStorage.setItem('username', username)
-  localStorage.setItem('userId', data.userId || 'director')
-  return { token: data.token, role: data.role || 'director', username, userId: data.userId || 'director' }
+  localStorage.setItem('userId', 'director')
+  return { token, role: 'director', username, userId: 'director' }
 }
 
 export const logout = () => {
@@ -70,3 +78,36 @@ export const getCurrentUser = () => ({
 })
 export const getApiUrlHelper = getApiUrl
 export const getAuthHeadersHelper = getAuthHeaders
+
+export const getDashboardFallbackData = () => ({
+  students: [
+    {
+      id: 1,
+      admissionNumber: 'ALB001',
+      firstName: 'John',
+      lastName: 'Doe',
+      school: 'Primary',
+      classLevel: 'Grade 1',
+      parentPhoneNumber: '08000000001',
+      boardingStatus: false,
+      takesSchoolBus: true,
+      invoices: []
+    },
+    {
+      id: 2,
+      admissionNumber: 'ALB002',
+      firstName: 'Jane',
+      lastName: 'Smith',
+      school: 'Secondary',
+      classLevel: 'JSS 2',
+      parentPhoneNumber: '08000000002',
+      boardingStatus: true,
+      takesSchoolBus: false,
+      invoices: []
+    }
+  ],
+  sessions: [],
+  terms: [],
+  payments: [],
+  invoices: []
+})

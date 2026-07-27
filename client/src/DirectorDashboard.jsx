@@ -4,7 +4,7 @@ import { Pie, Bar } from 'react-chartjs-2';
 import { Chart as ChartJS, ArcElement, CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend } from 'chart.js';
 import SchoolHeader from './SchoolHeader';
 import './DirectorDashboard.css';
-import { getApiUrl, logout } from './utils/supabaseClient';
+import { getApiUrl, logout, getDashboardFallbackData } from './utils/supabaseClient';
 import { generateAnalyticsReportPDF, generateFinancialSummaryPDF, generateDebtorsReportPDF } from './utils/pdfService';
 
 ChartJS.register(ArcElement, CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend);
@@ -74,7 +74,28 @@ const DirectorDashboard = ({ onLogout }) => {
       setError(null);
     } catch (err) {
       console.error('Error loading dashboard:', err);
-      setError('Failed to load dashboard data');
+      const fallbackData = getDashboardFallbackData();
+      setStudents(fallbackData.students);
+      setPayments(fallbackData.payments);
+      setInvoices(fallbackData.invoices);
+      setNotifications([]);
+      setSummary({
+        totalStudents: fallbackData.students.length,
+        primaryStudents: fallbackData.students.filter((student) => student.school === 'Primary').length,
+        secondaryStudents: fallbackData.students.filter((student) => student.school === 'Secondary').length,
+        totalBoarders: fallbackData.students.filter((student) => student.boardingStatus).length,
+        totalBusUsers: fallbackData.students.filter((student) => student.takesSchoolBus).length,
+        totalInvoices: fallbackData.invoices.length,
+        totalPayments: fallbackData.payments.length,
+        recentPayments: 0,
+        totalExpected: 0,
+        totalCollected: 0,
+        totalOutstanding: 0,
+        collectionRate: 0,
+        bankAnalytics: { bankData: {}, termData: {}, totalExpected: 0, totalCollected: 0, totalInvoices: 0 }
+      });
+      setBankAnalytics({ bankData: {}, termData: {}, totalExpected: 0, totalCollected: 0, totalInvoices: 0 });
+      setError('Using demo data because the backend is unavailable');
     } finally {
       setLoading(false);
     }
