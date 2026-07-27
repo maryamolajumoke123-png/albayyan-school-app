@@ -1,8 +1,19 @@
 {
   "version": 2,
   "public": false,
-  "buildCommand": "npm install --workspace=server",
   "installCommand": "npm install --workspace=server",
+  "builds": [
+    {
+      "src": "server/server.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "server/server.js"
+    }
+  ],
   "env": {
     "NODE_ENV": "production"
   }
