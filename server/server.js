@@ -33,10 +33,17 @@ if (!SUPABASE_SERVICE_ROLE_KEY && SUPABASE_ANON_KEY && isDev) {
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const app = express();
 
+const allowedOrigins = [
+  'https://albayyandbms1.web.app',
+  'https://alb-project-e0py0da2k-maryamolajumoke123-pixels-projects.vercel.app',
+];
+
 app.use(cors({
   origin: (origin, callback) => {
     // Allow requests from localhost on any port in development
     if (isDev && origin && origin.startsWith('http://localhost')) {
+      callback(null, true);
+    } else if (origin && allowedOrigins.includes(origin)) {
       callback(null, true);
     } else if (process.env.CORS_ORIGIN && origin === process.env.CORS_ORIGIN) {
       callback(null, true);
@@ -48,6 +55,8 @@ app.use(cors({
     }
   },
   credentials: true,
+  optionsSuccessStatus: 204,
+  preflightContinue: false,
 }));
 app.use(express.json());
 
