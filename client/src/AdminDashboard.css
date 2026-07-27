@@ -2,7 +2,7 @@
 :root {
   --primary: #2563eb;
   --primary-dark: #1e40af;
-  --secondary: #7c3aed;
+  --secondary: #3b82f6;
   --success: #10b981;
   --warning: #f59e0b;
   --danger: #ef4444;
@@ -24,7 +24,7 @@
 
 body {
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #f5f7fa 0%, #e9eef6 100%);
   min-height: 100vh;
 }
 
@@ -46,7 +46,7 @@ body {
 
 .admin-content {
   padding: 30px;
-  background: linear-gradient(135deg, #f5f7fa 0%, #f0f4f8 100%);
+  background: linear-gradient(135deg, #f8fafc 0%, #eef2f7 100%);
   min-height: 100vh;
 }
 

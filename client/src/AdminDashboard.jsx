@@ -63,6 +63,7 @@ const AdminDashboard = ({ onLogout }) => {
   // Fee Structures
   const [feeStructures, setFeeStructures] = useState([]);
   const [selectedTermForFees, setSelectedTermForFees] = useState('');
+  const [editingFeeId, setEditingFeeId] = useState(null);
   const [newFee, setNewFee] = useState({
     sessionId: '',
     termId: '',
@@ -97,6 +98,26 @@ const AdminDashboard = ({ onLogout }) => {
     setTimeout(() => setSuccessMessage(''), 3000);
   };
 
+  // Auto-select fee structure when student and term are selected
+  useEffect(() => {
+    if (newInvoice.studentId && newInvoice.termId) {
+      // Find the selected student
+      const selectedStudent = students.find(s => s.id === parseInt(newInvoice.studentId));
+      if (selectedStudent) {
+        // Find the matching fee structure for this term and student's class level
+        const matchingFeeStructure = feeStructures.find(
+          f => f.termId === parseInt(newInvoice.termId) && f.classLevel === selectedStudent.classLevel
+        );
+        if (matchingFeeStructure) {
+          setNewInvoice(prev => ({
+            ...prev,
+            feeStructureId: matchingFeeStructure.id.toString()
+          }));
+        }
+      }
+    }
+  }, [newInvoice.studentId, newInvoice.termId, students, feeStructures]);
+
   // Load data based on active tab
   useEffect(() => {
     loadDashboard();
@@ -107,6 +128,7 @@ const AdminDashboard = ({ onLogout }) => {
       const studentsResponse = await axios.get(`${API_URL}/admin/students`, { headers });
       const sessionsResponse = await axios.get(`${API_URL}/admin/sessions`, { headers });
       const paymentsResponse = await axios.get(`${API_URL}/admin/payments`, { headers });
+      const termsResponse = await axios.get(`${API_URL}/admin/terms`, { headers });
 
       const studentsData = (studentsResponse.data || []).map(student => {
         const invoices = student.invoices || [];
@@ -121,19 +143,23 @@ const AdminDashboard = ({ onLogout }) => {
 
       setStudents(studentsData);
       setSessions(sessionsResponse.data || []);
+      setTerms(termsResponse.data || []);
       setPayments(paymentsResponse.data || []);
 
       const allInvoices = studentsData.flatMap(s => 
-        (s.invoices || []).map(inv => ({
-          ...inv,
-          student: { 
-            id: s.id,
-            firstName: s.firstName, 
-            lastName: s.lastName,
-            admissionNumber: s.admissionNumber
-          },
-          balanceDue: (inv.balanceDue ?? inv.totalAmount ?? 0) - (inv.amountPaid ?? 0)
-        }))
+        (s.invoices || []).map(inv => {
+          const balanceDue = inv.balanceDue ?? Math.max(0, (inv.totalAmount ?? 0) - (inv.amountPaid ?? 0));
+          return {
+            ...inv,
+            student: { 
+              id: s.id,
+              firstName: s.firstName, 
+              lastName: s.lastName,
+              admissionNumber: s.admissionNumber
+            },
+            balanceDue
+          };
+        })
       );
       setInvoices(allInvoices);
       
@@ -476,7 +502,7 @@ const AdminDashboard = ({ onLogout }) => {
     if (!termId) return;
     try {
       const res = await axios.get(`${API_URL}/admin/terms/${termId}/fee-structures`, { headers });
-      setFeeStructures(res.data);
+      setFeeStructures(Array.isArray(res.data) ? res.data : (res.data ? [res.data] : []));
     } catch (error) {
       console.error('Error loading fees:', error);
     }
@@ -489,25 +515,96 @@ const AdminDashboard = ({ onLogout }) => {
         showSuccess('❌ Please select a term first');
         return;
       }
-      
-      const sessionId = sessions.find(s => s.terms.some(t => t.id === selectedTermForFees))?.id;
-      const data = { ...newFee, sessionId, termId: selectedTermForFees };
-      
-      await axios.post(`${API_URL}/admin/fee-structures`, data, { headers });
-      showSuccess('✅ Fee structure created 💰');
+
+      const selectedTermId = String(selectedTermForFees);
+      const sessionId = sessions.find((s) => (s.terms || []).some((t) => String(t.id) === selectedTermId))?.id;
+      if (!sessionId) {
+        showSuccess('❌ Unable to determine session for selected term');
+        return;
+      }
+
+      const duplicateClass = feeStructures.some((fee) => fee.classLevel === newFee.classLevel && !editingFeeId);
+      if (duplicateClass) {
+        showSuccess('❌ A fee structure already exists for this class in the selected term. Use edit instead.');
+        return;
+      }
+
+      const payload = {
+        sessionId,
+        termId: selectedTermId,
+        classLevel: newFee.classLevel,
+        newStudentBaseTuition: Number(newFee.newStudentBaseTuition) || 0,
+        newStudentBoardingFee: Number(newFee.newStudentBoardingFee) || 0,
+        newStudentSchoolBusFee: Number(newFee.newStudentSchoolBusFee) || 0,
+        returningStudentBaseTuition: Number(newFee.returningStudentBaseTuition) || 0,
+        returningStudentBoardingFee: Number(newFee.returningStudentBoardingFee) || 0,
+        returningStudentSchoolBusFee: Number(newFee.returningStudentSchoolBusFee) || 0,
+      };
+
+      let response;
+      if (editingFeeId) {
+        response = await axios.put(`${API_URL}/admin/fee-structures/${editingFeeId}`, payload, { headers });
+      } else {
+        response = await axios.post(`${API_URL}/admin/fee-structures`, payload, { headers });
+      }
+
+      const savedFees = Array.isArray(response.data) ? response.data : (response.data ? [response.data] : []);
+      setFeeStructures(savedFees);
+      showSuccess(editingFeeId ? '✅ Fee structure updated' : '✅ Fee structure created 💰');
+      setEditingFeeId(null);
       setNewFee({
         sessionId: '',
         termId: '',
         classLevel: 'JSS 1',
         newStudentBaseTuition: 0,
         newStudentBoardingFee: 0,
+        newStudentSchoolBusFee: 0,
         returningStudentBaseTuition: 0,
-        returningStudentBoardingFee: 0
+        returningStudentBoardingFee: 0,
+        returningStudentSchoolBusFee: 0
       });
-      handleLoadFeesForTerm(selectedTermForFees);
+      handleLoadFeesForTerm(selectedTermId);
     } catch (error) {
       showSuccess('❌ Error: ' + (error.response?.data?.error || error.message));
     }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'fees' && selectedTermForFees) {
+      handleLoadFeesForTerm(selectedTermForFees);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, selectedTermForFees]);
+
+  const handleEditFee = (fee) => {
+    setEditingFeeId(fee.id);
+    setSelectedTermForFees(String(fee.term?.id || fee.termId || ''));
+    setNewFee({
+      sessionId: fee.sessionId || '',
+      termId: fee.termId || '',
+      classLevel: fee.classLevel || 'JSS 1',
+      newStudentBaseTuition: fee.newStudentBaseTuition || 0,
+      newStudentBoardingFee: fee.newStudentBoardingFee || 0,
+      newStudentSchoolBusFee: fee.newStudentSchoolBusFee || 0,
+      returningStudentBaseTuition: fee.returningStudentBaseTuition || 0,
+      returningStudentBoardingFee: fee.returningStudentBoardingFee || 0,
+      returningStudentSchoolBusFee: fee.returningStudentSchoolBusFee || 0
+    });
+  };
+
+  const handleCancelEditFee = () => {
+    setEditingFeeId(null);
+    setNewFee({
+      sessionId: '',
+      termId: '',
+      classLevel: 'JSS 1',
+      newStudentBaseTuition: 0,
+      newStudentBoardingFee: 0,
+      newStudentSchoolBusFee: 0,
+      returningStudentBaseTuition: 0,
+      returningStudentBoardingFee: 0,
+      returningStudentSchoolBusFee: 0
+    });
   };
 
   const handleDeleteFee = async (id) => {
@@ -547,6 +644,13 @@ const AdminDashboard = ({ onLogout }) => {
     }
   };
 
+  const generateReceiptNumber = () => {
+    const now = new Date();
+    const datePart = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+    const randomPart = String(Math.floor(1000 + Math.random() * 9000));
+    return `RCP-${datePart}-${randomPart}`;
+  };
+
   // ===== PAYMENT OPERATIONS =====
   const handleRecordPayment = async (e) => {
     e.preventDefault();
@@ -576,7 +680,7 @@ const AdminDashboard = ({ onLogout }) => {
       }
 
       // Get invoice and student details for notification
-      const invoice = invoices.find(inv => inv.id === newPayment.invoiceId);
+      const invoice = invoices.find(inv => String(inv.id) === String(newPayment.invoiceId));
       const student = students.find(s => s.id === newPayment.studentId || String(s.id) === String(newPayment.studentId));
 
       if (!invoice) {
@@ -584,16 +688,19 @@ const AdminDashboard = ({ onLogout }) => {
         return;
       }
 
+      const generatedReceiptNumber = newPayment.receiptNumber || generateReceiptNumber();
+      setNewPayment({ ...newPayment, receiptNumber: generatedReceiptNumber });
+
       // Record payment through backend API
       const paymentRecord = {
-        invoiceId: newPayment.invoiceId,
+        invoiceId: Number(newPayment.invoiceId),
         amountPaid: parseFloat(newPayment.amountPaid),
         paymentMethod: newPayment.paymentMethod,
         bankName: newPayment.bankName,
         transactionReference: newPayment.transactionReference,
         paymentDate: newPayment.paidDate || new Date().toISOString().split('T')[0],
         recordedBy: 'Admin',
-        receiptNumber: newPayment.receiptNumber || `RCP-${Date.now()}`
+        receiptNumber: generatedReceiptNumber
       };
 
       const paymentResponse = await axios.post(`${API_URL}/admin/payments`, paymentRecord, { headers });
@@ -1347,24 +1454,34 @@ const AdminDashboard = ({ onLogout }) => {
               style={{ padding: '10px', borderRadius: '4px', border: '1px solid #ccc' }}
             >
               <option value="">Select a Term</option>
-              {sessions.map(session =>
-                session.terms.map(term => (
-                  <option key={term.id} value={term.id}>
-                    {session.name} - {term.name}
-                  </option>
-                ))
+              {sessions.length === 0 && (
+                <option value="">No sessions available</option>
               )}
+              {sessions.map(session => (
+                (session.terms || []).length === 0 ? (
+                  <option key={`${session.id}-no-term`} value="" disabled>
+                    {session.name} - No terms yet
+                  </option>
+                ) : (
+                  session.terms.map(term => (
+                    <option key={term.id} value={term.id}>
+                      {session.name} - {term.name}
+                    </option>
+                  ))
+                )
+              ))}
             </select>
           </div>
 
           {selectedTermForFees && (
             <form className="form" onSubmit={handleCreateFee}>
-              <h3>➕ Create New Fee Structure</h3>
+              <h3>{editingFeeId ? '✏️ Edit Fee Structure' : '➕ Create New Fee Structure'}</h3>
               <div className="form-row">
                 <div className="input-wrapper">
                   <i className="fas fa-book"></i>
                   <select
                     value={newFee.classLevel}
+                    disabled={Boolean(editingFeeId)}
                     onChange={(e) => setNewFee({ ...newFee, classLevel: e.target.value })}
                   >
                     <option>JSS 1</option>
@@ -1443,39 +1560,60 @@ const AdminDashboard = ({ onLogout }) => {
 
               <div className="form-row">
                 <button className="submit-button" type="submit">
-                  ➕ Create Fee Structure
+                  {editingFeeId ? '✏️ Update Fee Structure' : '➕ Create Fee Structure'}
                 </button>
+                {editingFeeId && (
+                  <button
+                    type="button"
+                    className="cancel-button"
+                    onClick={handleCancelEditFee}
+                    style={{ marginLeft: '12px' }}
+                  >
+                    ❌ Cancel Edit
+                  </button>
+                )}
               </div>
             </form>
           )}
 
           <h3>📋 Fee Structures</h3>
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Session - Term</th>
-                <th>Class</th>
-                <th>🆕 New (Tuition)</th>
-                <th>↩️ Returning (Tuition)</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {feeStructures.filter(fee => !selectedTermForFees || fee.term.id === selectedTermForFees).map(fee => (
-                <tr key={fee.id}>
-                  <td>{fee.session.name} - {fee.term.name}</td>
-                  <td>{fee.classLevel}</td>
-                  <td>₦{fee.newStudentTotal.toLocaleString()}</td>
-                  <td>₦{fee.returningStudentTotal.toLocaleString()}</td>
-                  <td>
-                    <button className="action-btn delete" onClick={() => handleDeleteFee(fee.id)}>
-                      🗑️
-                    </button>
-                  </td>
+          {feeStructures.length === 0 ? (
+            <div style={{ padding: '20px', backgroundColor: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '12px', color: '#475569' }}>
+              No fee structures loaded for the selected term. Select a term above or create a fee structure first.
+            </div>
+          ) : (
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Session - Term</th>
+                  <th>Class</th>
+                  <th>🆕 New (Tuition)</th>
+                  <th>↩️ Returning (Tuition)</th>
+                  <th>Actions</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {feeStructures
+                  .filter((fee) => !selectedTermForFees || String(fee.term?.id || fee.termId) === String(selectedTermForFees))
+                  .map((fee) => (
+                    <tr key={fee.id}>
+                      <td>{fee.session?.name || `Session ${fee.sessionId || 'N/A'}`} - {fee.term?.name || `Term ${fee.termId || 'N/A'}`}</td>
+                      <td>{fee.classLevel}</td>
+                      <td>₦{Number(fee.newStudentTotal || 0).toLocaleString()}</td>
+                      <td>₦{Number(fee.returningStudentTotal || 0).toLocaleString()}</td>
+                      <td>
+                        <button className="action-btn edit" onClick={() => handleEditFee(fee)}>
+                          ✏️
+                        </button>
+                        <button className="action-btn delete" onClick={() => handleDeleteFee(fee.id)}>
+                          🗑️
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          )}
         </div>
       )}
 
@@ -1505,7 +1643,12 @@ const AdminDashboard = ({ onLogout }) => {
                 <i className="fas fa-book"></i>
                 <select
                   value={newInvoice.termId}
-                  onChange={(e) => setNewInvoice({ ...newInvoice, termId: e.target.value })}
+                  onChange={(e) => {
+                    setNewInvoice({ ...newInvoice, termId: e.target.value });
+                    if (e.target.value) {
+                      handleLoadFeesForTerm(e.target.value);
+                    }
+                  }}
                   required
                 >
                   <option value="">Select Term</option>
@@ -1610,7 +1753,7 @@ const AdminDashboard = ({ onLogout }) => {
                 }
                 generatePaymentReceiptPDF(payments[0], payments[0].invoice.student, payments[0].invoice);
               }}
-              style={{ padding: '10px 15px', backgroundColor: '#8b5cf6', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', fontWeight: '600' }}
+              style={{ padding: '10px 15px', backgroundColor: '#3b82f6', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', fontWeight: '600' }}
               title="Download all payments summary"
             >
               📋 Export Payments Report
@@ -1665,7 +1808,7 @@ const AdminDashboard = ({ onLogout }) => {
                   disabled={isImportingPayments}
                   style={{
                     padding: '10px 15px',
-                    backgroundColor: isImportingPayments ? '#ccc' : '#8b5cf6',
+                    backgroundColor: isImportingPayments ? '#ccc' : '#3b82f6',
                     color: 'white',
                     border: 'none',
                     borderRadius: '4px',
@@ -1792,7 +1935,6 @@ const AdminDashboard = ({ onLogout }) => {
                   placeholder="Receipt Number"
                   value={newPayment.receiptNumber}
                   onChange={(e) => setNewPayment({ ...newPayment, receiptNumber: e.target.value })}
-                  required
                 />
               </div>
               <div className="input-wrapper">
@@ -1849,17 +1991,27 @@ const AdminDashboard = ({ onLogout }) => {
               </tr>
             </thead>
             <tbody>
-              {payments.map(pay => (
+              {payments.length === 0 ? (
+                <tr>
+                  <td colSpan="10" style={{ textAlign: 'center', padding: '24px', color: '#6b7280' }}>
+                    No payments yet.
+                  </td>
+                </tr>
+              ) : payments.map(pay => (
                 <tr key={pay.id}>
-                  <td>{pay.invoice.student.firstName} {pay.invoice.student.lastName}</td>
-                  <td>₦{pay.amountPaid.toLocaleString()}</td>
+                  <td>
+                    {pay.invoice?.student
+                      ? `${pay.invoice.student.firstName || ''} ${pay.invoice.student.lastName || ''}`.trim()
+                      : pay.paidByName || '—'}
+                  </td>
+                  <td>₦{(pay.amountPaid || 0).toLocaleString()}</td>
                   <td>{pay.receiptNumber || '—'}</td>
                   <td>{pay.paidByName || '—'}</td>
                   <td><span className="bank-badge">{pay.bankName || '—'}</span></td>
-                  <td>{new Date(pay.paymentDate).toLocaleDateString()}</td>
-                  <td><span className="method-badge">{pay.paymentMethod}</span></td>
-                  <td>{pay.transactionReference}</td>
-                  <td>{pay.recordedBy}</td>
+                  <td>{pay.paymentDate ? new Date(pay.paymentDate).toLocaleDateString() : '—'}</td>
+                  <td><span className="method-badge">{pay.paymentMethod || '—'}</span></td>
+                  <td>{pay.transactionReference || '—'}</td>
+                  <td>{pay.recordedBy || '—'}</td>
                   <td>
                     <button className="action-btn" onClick={() => handleViewReceipt(pay)} title="View and print receipt">
                       🧾

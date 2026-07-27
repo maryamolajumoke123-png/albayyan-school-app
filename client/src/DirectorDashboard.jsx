@@ -27,6 +27,22 @@ const DirectorDashboard = ({ onLogout }) => {
     Authorization: `Bearer ${authToken}`
   };
 
+  const toCurrency = (value) => `₦${Number(value || 0).toLocaleString()}`;
+  const getStudentName = (student) => {
+    if (!student) return 'Unknown';
+    return `${student.firstName || ''} ${student.lastName || ''}`.trim() || 'Unknown';
+  };
+  const getPaymentDisplay = (payment) => {
+    const student = payment?.student || payment?.invoice?.student;
+    const invoice = payment?.invoice;
+    const amount = payment?.amountPaid ?? payment?.amount ?? 0;
+    const studentName = getStudentName(student);
+    const termName = invoice?.term?.name || '—';
+    const paymentMethod = payment?.paymentMethod || payment?.bankName || '—';
+    const reference = payment?.referenceNumber || payment?.receiptNumber || payment?.transactionReference || '—';
+    return { studentName, amount, termName, paymentMethod, reference };
+  };
+
   // Load Dashboard Data
   useEffect(() => {
     loadDashboard();
@@ -124,9 +140,9 @@ const DirectorDashboard = ({ onLogout }) => {
                 { label: 'Total Invoices', value: summary.totalInvoices, icon: '📄' },
                 { label: 'Total Payments', value: summary.totalPayments, icon: '💳' },
                 { label: 'Recent Payments (24h)', value: summary.recentPayments, icon: '📦' },
-                { label: 'Total Expected', value: `₦${summary.totalExpected.toLocaleString()}`, icon: '💵' },
-                { label: 'Total Collected', value: `₦${summary.totalCollected.toLocaleString()}`, icon: '💰' },
-                { label: 'Outstanding Balance', value: `₦${summary.totalOutstanding.toLocaleString()}`, icon: '🔴' },
+                { label: 'Total Expected', value: toCurrency(summary.totalExpected), icon: '💵' },
+                { label: 'Total Collected', value: toCurrency(summary.totalCollected), icon: '💰' },
+                { label: 'Outstanding Balance', value: toCurrency(summary.totalOutstanding), icon: '🔴' },
                 { label: 'Collection Rate', value: `${summary.collectionRate}%`, icon: '📊' }
               ].map((stat, idx) => (
                 <div key={idx} className="director-stat-card">
@@ -150,14 +166,17 @@ const DirectorDashboard = ({ onLogout }) => {
               </thead>
               <tbody>
                 {payments.length > 0 ? (
-                  payments.map((payment, idx) => (
-                    <tr key={idx}>
-                      <td>{new Date(payment.createdAt).toLocaleDateString()} {new Date(payment.createdAt).toLocaleTimeString()}</td>
-                      <td>{payment.student?.firstName} {payment.student?.lastName}</td>
-                      <td style={{ fontWeight: 'bold', color: '#10b981' }}>₦{payment.amount.toLocaleString()}</td>
-                      <td>Supabase Transfer</td>
-                    </tr>
-                  ))
+                  payments.map((payment, idx) => {
+                    const display = getPaymentDisplay(payment);
+                    return (
+                      <tr key={idx}>
+                        <td>{new Date(payment.createdAt || payment.paymentDate).toLocaleDateString()} {new Date(payment.createdAt || payment.paymentDate).toLocaleTimeString()}</td>
+                        <td>{display.studentName}</td>
+                        <td style={{ fontWeight: 'bold', color: '#10b981' }}>{toCurrency(display.amount)}</td>
+                        <td>{display.paymentMethod}</td>
+                      </tr>
+                    );
+                  })
                 ) : (
                   <tr>
                     <td colSpan="4" style={{ padding: '20px', textAlign: 'center', color: '#6b7280' }}>No recent payments</td>
@@ -239,15 +258,18 @@ const DirectorDashboard = ({ onLogout }) => {
               </thead>
               <tbody>
                 {invoices.map((invoice, idx) => {
-                  const paidPercentage = invoice.totalAmount > 0 ? (invoice.amountPaid / invoice.totalAmount * 100) : 0;
+                  const totalAmount = Number(invoice?.totalAmount || 0);
+                  const amountPaid = Number(invoice?.amountPaid || 0);
+                  const balanceDue = Number(invoice?.balanceDue || 0);
+                  const paidPercentage = totalAmount > 0 ? (amountPaid / totalAmount * 100) : 0;
                   const statusColor = paidPercentage === 100 ? '#2ecc71' : paidPercentage > 50 ? '#f39c12' : '#e74c3c';
                   return (
                     <tr key={idx} style={{ borderBottom: '1px solid #ecf0f1' }}>
-                      <td style={{ padding: '15px' }}>{invoice.student.firstName} {invoice.student.lastName}</td>
-                      <td style={{ padding: '15px' }}>{invoice.term.name}</td>
-                      <td style={{ padding: '15px' }}>₦{invoice.totalAmount.toLocaleString()}</td>
-                      <td style={{ padding: '15px', fontWeight: 'bold', color: '#27ae60' }}>₦{invoice.amountPaid.toLocaleString()}</td>
-                      <td style={{ padding: '15px', fontWeight: 'bold', color: statusColor }}>₦{invoice.balanceDue.toLocaleString()}</td>
+                      <td style={{ padding: '15px' }}>{getStudentName(invoice?.student)}</td>
+                      <td style={{ padding: '15px' }}>{invoice?.term?.name || '—'}</td>
+                      <td style={{ padding: '15px' }}>{toCurrency(totalAmount)}</td>
+                      <td style={{ padding: '15px', fontWeight: 'bold', color: '#27ae60' }}>{toCurrency(amountPaid)}</td>
+                      <td style={{ padding: '15px', fontWeight: 'bold', color: statusColor }}>{toCurrency(balanceDue)}</td>
                       <td style={{ padding: '15px' }}>
                         <span style={{
                           backgroundColor: statusColor,
@@ -291,16 +313,19 @@ const DirectorDashboard = ({ onLogout }) => {
                 </tr>
               </thead>
               <tbody>
-                {payments.map((payment, idx) => (
-                  <tr key={idx} style={{ borderBottom: '1px solid #ecf0f1' }}>
-                    <td style={{ padding: '15px' }}>{new Date(payment.createdAt).toLocaleDateString()}</td>
-                    <td style={{ padding: '15px' }}>{payment.invoice.student.firstName} {payment.invoice.student.lastName}</td>
-                    <td style={{ padding: '15px' }}>{payment.invoice.term.name}</td>
-                    <td style={{ padding: '15px', fontWeight: 'bold', color: '#27ae60' }}>₦{payment.amountPaid.toLocaleString()}</td>
-                    <td style={{ padding: '15px' }}>{payment.paymentMethod}</td>
-                    <td style={{ padding: '15px', fontSize: '12px', color: '#7f8c8d' }}>{payment.referenceNumber || '—'}</td>
-                  </tr>
-                ))}
+                {payments.map((payment, idx) => {
+                  const display = getPaymentDisplay(payment);
+                  return (
+                    <tr key={idx} style={{ borderBottom: '1px solid #ecf0f1' }}>
+                      <td style={{ padding: '15px' }}>{new Date(payment.createdAt || payment.paymentDate).toLocaleDateString()}</td>
+                      <td style={{ padding: '15px' }}>{display.studentName}</td>
+                      <td style={{ padding: '15px' }}>{display.termName}</td>
+                      <td style={{ padding: '15px', fontWeight: 'bold', color: '#27ae60' }}>{toCurrency(display.amount)}</td>
+                      <td style={{ padding: '15px' }}>{display.paymentMethod}</td>
+                      <td style={{ padding: '15px', fontSize: '12px', color: '#7f8c8d' }}>{display.reference}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -559,32 +584,34 @@ const DirectorDashboard = ({ onLogout }) => {
               gap: '15px'
             }}>
               {payments.length > 0 ? (
-                payments.map((payment, idx) => (
-                  <div key={idx} style={{
-                    backgroundColor: 'white',
-                    padding: '20px',
-                    borderRadius: '10px',
-                    borderLeft: '5px solid #27ae60',
-                    boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
-                  }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
-                      <div>
-                        <p style={{ margin: '0 0 10px 0', fontSize: '16px', fontWeight: 'bold' }}>
-                          ✅ Invoice: {payment.student?.firstName} {payment.student?.lastName}
-                        </p>
-                        <p style={{ margin: '0 0 5px 0', color: '#7f8c8d' }}>
-                          <strong>Amount:</strong> ₦{payment.amount.toLocaleString()}
-                        </p>
-                        <p style={{ margin: '0 0 5px 0', color: '#7f8c8d' }}>
-                          <strong>Term:</strong> {payment.invoice.term.name}
-                        </p>
-                        <p style={{ margin: '0 0 5px 0', color: '#7f8c8d' }}>
-                          <strong>Method:</strong> {payment.paymentMethod}
-                        </p>
-                        <p style={{ margin: '0', color: '#95a5a6', fontSize: '12px' }}>
-                          {new Date(payment.createdAt).toLocaleString()}
-                        </p>
-                      </div>
+                payments.map((payment, idx) => {
+                  const display = getPaymentDisplay(payment);
+                  return (
+                    <div key={idx} style={{
+                      backgroundColor: 'white',
+                      padding: '20px',
+                      borderRadius: '10px',
+                      borderLeft: '5px solid #27ae60',
+                      boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
+                    }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
+                        <div>
+                          <p style={{ margin: '0 0 10px 0', fontSize: '16px', fontWeight: 'bold' }}>
+                            ✅ Invoice: {display.studentName}
+                          </p>
+                          <p style={{ margin: '0 0 5px 0', color: '#7f8c8d' }}>
+                            <strong>Amount:</strong> {toCurrency(display.amount)}
+                          </p>
+                          <p style={{ margin: '0 0 5px 0', color: '#7f8c8d' }}>
+                            <strong>Term:</strong> {display.termName}
+                          </p>
+                          <p style={{ margin: '0 0 5px 0', color: '#7f8c8d' }}>
+                            <strong>Method:</strong> {display.paymentMethod}
+                          </p>
+                          <p style={{ margin: '0', color: '#95a5a6', fontSize: '12px' }}>
+                            {new Date(payment.createdAt || payment.paymentDate).toLocaleString()}
+                          </p>
+                        </div>
                       <span style={{
                         backgroundColor: '#d5f4e6',
                         color: '#27ae60',
@@ -595,9 +622,10 @@ const DirectorDashboard = ({ onLogout }) => {
                       }}>
                         New
                       </span>
+                      </div>
                     </div>
-                  </div>
-                ))
+                  );
+                })
               ) : (
                 <div style={{
                   backgroundColor: 'white',

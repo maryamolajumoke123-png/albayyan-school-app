@@ -17,7 +17,7 @@ export default function ParentDashboard() {
     setError('');
     setLoading(true);
     try {
-      const response = await axios.get(`${API_URL}/api/students/${admissionNum}/invoices`);
+      const response = await axios.get(`${API_URL}/students/${admissionNum}/invoices`);
       setStudentData(response.data);
     } catch (err) {
       setError('Student not found. Please check the admission number.');

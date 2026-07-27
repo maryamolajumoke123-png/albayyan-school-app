@@ -34,7 +34,19 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const app = express();
 
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+  origin: (origin, callback) => {
+    // Allow requests from localhost on any port in development
+    if (isDev && origin && origin.startsWith('http://localhost')) {
+      callback(null, true);
+    } else if (process.env.CORS_ORIGIN && origin === process.env.CORS_ORIGIN) {
+      callback(null, true);
+    } else if (!origin) {
+      // Allow requests with no origin (like mobile apps or curl requests)
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
 }));
 app.use(express.json());
@@ -54,6 +66,221 @@ const mapKeysDeep = (input) => {
 const normalize = (data) => {
   if (Array.isArray(data)) return data.map(mapKeysDeep);
   return mapKeysDeep(data);
+};
+
+const createMapById = (items) => (items || []).reduce((acc, item) => {
+  if (!item || item.id === undefined || item.id === null) return acc;
+  acc[item.id] = item;
+  return acc;
+}, {});
+
+const groupBy = (items, key) => (items || []).reduce((acc, item) => {
+  const value = item?.[key];
+  if (value === undefined || value === null) return acc;
+  if (!acc[value]) acc[value] = [];
+  acc[value].push(item);
+  return acc;
+}, {});
+
+const generateReceiptNumber = () => {
+  const now = new Date();
+  const datePart = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+  const randomPart = String(Math.floor(1000 + Math.random() * 9000));
+  return `RCP-${datePart}-${randomPart}`;
+};
+
+const hydrateInvoices = async (invoiceRows) => {
+  const invoices = invoiceRows || [];
+  const invoiceIds = [...new Set(invoices.map((invoice) => invoice.id).filter(Boolean))];
+  const studentIds = [...new Set(invoices.map((invoice) => invoice.student_id).filter(Boolean))];
+  const termIds = [...new Set(invoices.map((invoice) => invoice.term_id).filter(Boolean))];
+  const feeStructureIds = [...new Set(invoices.map((invoice) => invoice.fee_structure_id).filter(Boolean))];
+
+  const [studentsResp, termsResp, feeStructuresResp, paymentsResp] = await Promise.all([
+    studentIds.length ? supabase.from('students').select('*').in('id', studentIds) : Promise.resolve({ data: [], error: null }),
+    termIds.length ? supabase.from('terms').select('*').in('id', termIds) : Promise.resolve({ data: [], error: null }),
+    feeStructureIds.length ? supabase.from('fee_structures').select('*').in('id', feeStructureIds) : Promise.resolve({ data: [], error: null }),
+    invoiceIds.length ? supabase.from('payments').select('*').in('invoice_id', invoiceIds) : Promise.resolve({ data: [], error: null }),
+  ]);
+
+  if (studentsResp.error) throw studentsResp.error;
+  if (termsResp.error) throw termsResp.error;
+  if (feeStructuresResp.error) throw feeStructuresResp.error;
+  if (paymentsResp.error) throw paymentsResp.error;
+
+  const studentsById = createMapById(studentsResp.data);
+  const termsById = createMapById(termsResp.data);
+  const feeStructuresById = createMapById(feeStructuresResp.data);
+  const paymentsByInvoiceId = groupBy(paymentsResp.data, 'invoice_id');
+
+  return invoices.map((invoice) => {
+    const normalizedInvoice = normalize(invoice);
+    normalizedInvoice.student = normalize(studentsById[invoice.student_id] || null);
+    normalizedInvoice.term = normalize(termsById[invoice.term_id] || null);
+    normalizedInvoice.feeStructure = normalize(feeStructuresById[invoice.fee_structure_id] || null);
+    normalizedInvoice.payments = normalize(paymentsByInvoiceId[invoice.id] || []);
+    return normalizedInvoice;
+  });
+};
+
+const fetchStudentsWithInvoices = async () => {
+  const { data: studentsData, error: studentsError } = await supabase
+    .from('students')
+    .select('*')
+    .order('created_at', { ascending: false });
+
+  if (studentsError) throw studentsError;
+
+  const studentIds = studentsData.map((student) => student.id).filter(Boolean);
+  if (studentIds.length === 0) return normalize(studentsData);
+
+  const { data: invoicesData, error: invoicesError } = await supabase
+    .from('invoices')
+    .select('*')
+    .in('student_id', studentIds);
+
+  if (invoicesError) throw invoicesError;
+
+  const hydratedInvoices = await hydrateInvoices(invoicesData || []);
+  const invoicesByStudentId = groupBy(hydratedInvoices, 'studentId');
+
+  return normalize(studentsData).map((student) => {
+    const normalizedStudent = normalize(student);
+    normalizedStudent.invoices = invoicesByStudentId[student.id] || [];
+    normalizedStudent.totalAmount = normalizedStudent.invoices.reduce((sum, invoice) => sum + Number(invoice.totalAmount || 0), 0);
+    normalizedStudent.paidAmount = normalizedStudent.invoices.reduce((sum, invoice) => sum + Number(invoice.amountPaid || 0), 0);
+    return normalizedStudent;
+  });
+};
+
+const fetchInvoicesWithRelations = async (filter = {}) => {
+  let query = supabase.from('invoices').select('*').order('created_at', { ascending: false });
+  if (filter.termId) query = query.eq('term_id', filter.termId);
+  if (filter.invoiceIds) query = query.in('id', filter.invoiceIds);
+  if (filter.studentId) query = query.eq('student_id', filter.studentId);
+
+  const { data: invoicesData, error } = await query;
+  if (error) throw error;
+  return hydrateInvoices(invoicesData || []);
+};
+
+const fetchPaymentsWithInvoiceRelations = async (filter = {}) => {
+  let query = supabase.from('payments').select('*').order('payment_date', { ascending: false });
+  if (filter.paymentIds) query = query.in('id', filter.paymentIds);
+  if (filter.invoiceIds) query = query.in('invoice_id', filter.invoiceIds);
+
+  const { data: paymentsData, error } = await query;
+  if (error) throw error;
+
+  const invoiceIds = [...new Set((paymentsData || []).map((payment) => payment.invoice_id).filter(Boolean))];
+  const invoices = invoiceIds.length ? await fetchInvoicesWithRelations({ invoiceIds }) : [];
+  const invoicesById = createMapById(invoices);
+
+  return normalize(paymentsData || []).map((payment) => ({
+    ...payment,
+    invoice: invoicesById[payment.invoiceId] || null,
+  }));
+};
+
+const fetchSessionsWithTerms = async () => {
+  const { data: sessionsData, error: sessionsError } = await supabase
+    .from('sessions')
+    .select('*')
+    .order('created_at', { ascending: false });
+
+  if (sessionsError) throw sessionsError;
+
+  const sessionIds = sessionsData.map((session) => session.id).filter(Boolean);
+  if (sessionIds.length === 0) return normalize(sessionsData);
+
+  const { data: termsData, error: termsError } = await supabase
+    .from('terms')
+    .select('*')
+    .in('session_id', sessionIds)
+    .order('created_at', { ascending: true });
+
+  if (termsError) throw termsError;
+
+  const termsBySessionId = groupBy(termsData, 'session_id');
+  return normalize(sessionsData).map((session) => ({
+    ...normalize(session),
+    terms: normalize(termsBySessionId[session.id] || []),
+  }));
+};
+
+const fetchTermsWithDetails = async (sessionId) => {
+  const { data: termsData, error: termsError } = await supabase
+    .from('terms')
+    .select('*')
+    .eq('session_id', sessionId)
+    .order('created_at', { ascending: true });
+
+  if (termsError) throw termsError;
+
+  const termIds = termsData.map((term) => term.id).filter(Boolean);
+  if (termIds.length === 0) return normalize(termsData);
+
+  const [feeStructuresResp, invoicesResp] = await Promise.all([
+    supabase.from('fee_structures').select('*').in('term_id', termIds),
+    supabase.from('invoices').select('*').in('term_id', termIds),
+  ]);
+
+  if (feeStructuresResp.error) throw feeStructuresResp.error;
+  if (invoicesResp.error) throw invoicesResp.error;
+
+  const feeStructuresByTermId = groupBy(feeStructuresResp.data, 'term_id');
+  const invoicesByTermId = groupBy(invoicesResp.data, 'term_id');
+
+  return normalize(termsData).map((term) => ({
+    ...normalize(term),
+    feeStructures: normalize(feeStructuresByTermId[term.id] || []),
+    invoices: normalize(invoicesByTermId[term.id] || []),
+  }));
+};
+
+const fetchFeeStructuresWithRelations = async (filter = {}) => {
+  let query = supabase.from('fee_structures').select('*');
+  if (filter.termId) query = query.eq('term_id', filter.termId);
+  if (filter.sessionId) query = query.eq('session_id', filter.sessionId);
+
+  const { data: feeStructuresData, error } = await query;
+  if (error) throw error;
+
+  const sessionIds = [...new Set((feeStructuresData || []).map((item) => item.session_id).filter(Boolean))];
+  const termIds = [...new Set((feeStructuresData || []).map((item) => item.term_id).filter(Boolean))];
+
+  const [sessionsResp, termsResp] = await Promise.all([
+    sessionIds.length ? supabase.from('sessions').select('*').in('id', sessionIds) : Promise.resolve({ data: [], error: null }),
+    termIds.length ? supabase.from('terms').select('*').in('id', termIds) : Promise.resolve({ data: [], error: null }),
+  ]);
+
+  if (sessionsResp.error) throw sessionsResp.error;
+  if (termsResp.error) throw termsResp.error;
+
+  const normalizedSessions = normalize(sessionsResp.data || []);
+  const normalizedTerms = normalize(termsResp.data || []);
+  const sessionsById = createMapById(normalizedSessions);
+  const termsById = createMapById(normalizedTerms);
+  const normalizedFeeStructures = normalize(feeStructuresData || []);
+
+  return normalizedFeeStructures.map((item) => ({
+    ...item,
+    session: sessionsById[item.sessionId] || null,
+    term: termsById[item.termId] || null,
+  }));
+};
+
+const fetchStudentInvoicesByAdmissionNumber = async (admissionNumber) => {
+  const { data: student, error: studentError } = await supabase
+    .from('students')
+    .select('*')
+    .eq('admission_number', admissionNumber)
+    .single();
+
+  if (studentError || !student) return { student: null, invoices: [] };
+
+  const invoices = await fetchInvoicesWithRelations({ studentId: student.id });
+  return { student: normalize(student), invoices };
 };
 
 const getAuthToken = (req) => req.headers.authorization?.split(' ')[1];
@@ -134,18 +361,13 @@ app.post('/api/auth/director/login', asyncHandler(async (req, res) => {
 
 app.get('/api/students/:admissionNumber/invoices', asyncHandler(async (req, res) => {
   const { admissionNumber } = req.params;
-  const { data, error } = await supabase
-    .from('students')
-    .select('id, admission_number, first_name, last_name, school, class_level, invoices(*, payments(*), term(*), fee_structure(*))')
-    .eq('admission_number', admissionNumber)
-    .single();
+  const { student, invoices } = await fetchStudentInvoicesByAdmissionNumber(admissionNumber);
 
-  if (error || !data) {
+  if (!student) {
     return res.status(404).json({ error: 'Student not found at Albayyan International.' });
   }
 
-  const student = normalize(data);
-  const outstandingInvoices = (student.invoices || []).filter((invoice) => invoice.balanceDue > 0).map(mapInvoiceWithAcademicTerm);
+  const outstandingInvoices = (invoices || []).filter((invoice) => invoice.balanceDue > 0).map(mapInvoiceWithAcademicTerm);
 
   res.json({
     school: 'Albayyan International School',
@@ -156,13 +378,8 @@ app.get('/api/students/:admissionNumber/invoices', asyncHandler(async (req, res)
 }));
 
 app.get('/api/admin/sessions', adminAuth, asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
-    .from('sessions')
-    .select('*, terms(*)')
-    .order('created_at', { ascending: false });
-
-  if (error) throw error;
-  res.json(normalize(data));
+  const sessions = await fetchSessionsWithTerms();
+  res.json(sessions);
 }));
 
 app.post('/api/admin/sessions', adminAuth, asyncHandler(async (req, res) => {
@@ -223,14 +440,19 @@ app.delete('/api/admin/sessions/:id', adminAuth, asyncHandler(async (req, res) =
 
 app.get('/api/admin/sessions/:sessionId/terms', adminAuth, asyncHandler(async (req, res) => {
   const { sessionId } = req.params;
+  const terms = await fetchTermsWithDetails(sessionId);
+  res.json(terms);
+}));
+
+app.get('/api/admin/terms', adminAuth, asyncHandler(async (req, res) => {
   const { data, error } = await supabase
     .from('terms')
-    .select('*, fee_structures(*), invoices(*)')
-    .eq('session_id', sessionId)
-    .order('created_at', { ascending: true });
+    .select('*')
+    .order('session_id', { ascending: true })
+    .order('id', { ascending: true });
 
   if (error) throw error;
-  res.json(normalize(data));
+  res.json(normalize(data || []));
 }));
 
 app.post('/api/admin/terms', adminAuth, asyncHandler(async (req, res) => {
@@ -308,15 +530,32 @@ app.post('/api/admin/terms/:termId/carry-forward-balances', adminAuth, asyncHand
   const previousTerm = previousTerms[0];
   const { data: previousInvoices, error: prevInvoicesError } = await supabase
     .from('invoices')
-    .select('*, student(*), fee_structure(*)')
+    .select('*')
     .eq('term_id', previousTerm.id)
     .gt('balance_due', 0);
 
   if (prevInvoicesError) throw prevInvoicesError;
 
+  const feeStructureIds = [...new Set((previousInvoices || []).map((invoice) => invoice.fee_structure_id).filter(Boolean))];
+  const studentIds = [...new Set((previousInvoices || []).map((invoice) => invoice.student_id).filter(Boolean))];
+
+  const [feeStructuresResp, studentsResp] = await Promise.all([
+    feeStructureIds.length ? supabase.from('fee_structures').select('*').in('id', feeStructureIds) : Promise.resolve({ data: [], error: null }),
+    studentIds.length ? supabase.from('students').select('*').in('id', studentIds) : Promise.resolve({ data: [], error: null }),
+  ]);
+
+  if (feeStructuresResp.error) throw feeStructuresResp.error;
+  if (studentsResp.error) throw studentsResp.error;
+
+  const feeStructuresById = createMapById(feeStructuresResp.data);
+  const studentsById = createMapById(studentsResp.data);
   const carryForwardResults = [];
 
   for (const prevInvoice of previousInvoices || []) {
+    const feeStructure = feeStructuresById[prevInvoice.fee_structure_id];
+    if (!feeStructure) continue;
+
+    const student = normalize(studentsById[prevInvoice.student_id] || null);
     const { data: carryForward, error: carryError } = await supabase
       .from('carry_forwards')
       .insert([{ student_id: prevInvoice.student_id, from_term_id: previousTerm.id, to_term_id: termId, balance_amount: prevInvoice.balance_due, status: 'Active' }])
@@ -324,9 +563,6 @@ app.post('/api/admin/terms/:termId/carry-forward-balances', adminAuth, asyncHand
       .single();
 
     if (carryError || !carryForward) continue;
-
-    const feeStructure = prevInvoice.fee_structure;
-    if (!feeStructure) continue;
 
     const newStudentStatus = await isNewStudent(prevInvoice.student_id, term.start_date);
     const baseFee = newStudentStatus ? feeStructure.new_student_total : feeStructure.returning_student_total;
@@ -357,13 +593,8 @@ app.post('/api/admin/terms/:termId/carry-forward-balances', adminAuth, asyncHand
 }));
 
 app.get('/api/admin/students', adminAuth, asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
-    .from('students')
-    .select('*, invoices(*, payments(*), term(*), fee_structure(*))')
-    .order('created_at', { ascending: false });
-
-  if (error) throw error;
-  res.json(normalize(data));
+  const students = await fetchStudentsWithInvoices();
+  res.json(students);
 }));
 
 app.post('/api/admin/students', adminAuth, asyncHandler(async (req, res) => {
@@ -485,23 +716,14 @@ app.delete('/api/admin/students/:id', adminAuth, asyncHandler(async (req, res) =
 }));
 
 app.get('/api/admin/fee-structures', adminAuth, asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
-    .from('fee_structures')
-    .select('*, session(*), term(*)');
-
-  if (error) throw error;
-  res.json(normalize(data));
+  const feeStructures = await fetchFeeStructuresWithRelations();
+  res.json(feeStructures);
 }));
 
 app.get('/api/admin/terms/:termId/fee-structures', adminAuth, asyncHandler(async (req, res) => {
   const { termId } = req.params;
-  const { data, error } = await supabase
-    .from('fee_structures')
-    .select('*, session(*), term(*)')
-    .eq('term_id', termId);
-
-  if (error) throw error;
-  res.json(normalize(data));
+  const feeStructures = await fetchFeeStructuresWithRelations({ termId });
+  res.json(feeStructures);
 }));
 
 app.post('/api/admin/fee-structures', adminAuth, asyncHandler(async (req, res) => {
@@ -524,14 +746,29 @@ app.post('/api/admin/fee-structures', adminAuth, asyncHandler(async (req, res) =
     returning_student_total: (returningStudentBaseTuition || 0) + (returningStudentBoardingFee || 0) + (returningStudentSchoolBusFee || 0),
   };
 
+  const { data: existing, error: existingError } = await supabase
+    .from('fee_structures')
+    .select('id')
+    .eq('session_id', sessionId)
+    .eq('term_id', termId)
+    .eq('class_level', classLevel)
+    .limit(1);
+
+  if (existingError) throw existingError;
+  if (existing && existing.length > 0) {
+    return res.status(400).json({ error: 'A fee structure already exists for this class in the selected term. Please edit the existing fee structure instead.' });
+  }
+
   const { data, error } = await supabase
     .from('fee_structures')
     .insert([payload])
-    .select('*, session(*), term(*)')
+    .select('*')
     .single();
 
   if (error) throw error;
-  res.status(201).json(normalize(data));
+
+  const [feeStructure] = await fetchFeeStructuresWithRelations({ termId, sessionId });
+  res.status(201).json(feeStructure);
 }));
 
 app.put('/api/admin/fee-structures/:id', adminAuth, asyncHandler(async (req, res) => {
@@ -565,11 +802,13 @@ app.put('/api/admin/fee-structures/:id', adminAuth, asyncHandler(async (req, res
     .from('fee_structures')
     .update(updates)
     .eq('id', id)
-    .select('*, session(*), term(*)')
+    .select('*')
     .single();
 
   if (error) throw error;
-  res.json(normalize(data));
+
+  const [feeStructure] = await fetchFeeStructuresWithRelations({ termId: data.term_id, sessionId: data.session_id });
+  res.json(feeStructure);
 }));
 
 app.delete('/api/admin/fee-structures/:id', adminAuth, asyncHandler(async (req, res) => {
@@ -583,24 +822,14 @@ app.delete('/api/admin/fee-structures/:id', adminAuth, asyncHandler(async (req, 
 }));
 
 app.get('/api/admin/invoices', adminAuth, asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
-    .from('invoices')
-    .select('*, student(*), fee_structure(*), term(*), payments(*)')
-    .order('created_at', { ascending: false });
-
-  if (error) throw error;
-  res.json(normalize(data).map(mapInvoiceWithAcademicTerm));
+  const invoices = await fetchInvoicesWithRelations();
+  res.json(invoices.map(mapInvoiceWithAcademicTerm));
 }));
 
 app.get('/api/admin/terms/:termId/invoices', adminAuth, asyncHandler(async (req, res) => {
   const { termId } = req.params;
-  const { data, error } = await supabase
-    .from('invoices')
-    .select('*, student(*), fee_structure(*), payments(*)')
-    .eq('term_id', termId);
-
-  if (error) throw error;
-  res.json(normalize(data).map(mapInvoiceWithAcademicTerm));
+  const invoices = await fetchInvoicesWithRelations({ termId });
+  res.json(invoices.map(mapInvoiceWithAcademicTerm));
 }));
 
 app.post('/api/admin/invoices', adminAuth, asyncHandler(async (req, res) => {
@@ -611,7 +840,7 @@ app.post('/api/admin/invoices', adminAuth, asyncHandler(async (req, res) => {
 
   const { data: feeStructure, error: feeError } = await supabase
     .from('fee_structures')
-    .select('*, term(start_date, end_date)')
+    .select('*')
     .eq('id', feeStructureId)
     .single();
 
@@ -619,7 +848,8 @@ app.post('/api/admin/invoices', adminAuth, asyncHandler(async (req, res) => {
     return res.status(404).json({ error: 'Fee structure not found' });
   }
 
-  const newStudentStatus = await isNewStudent(studentId, feeStructure.term?.start_date);
+  const term = feeStructure.term_id ? (await supabase.from('terms').select('start_date').eq('id', feeStructure.term_id).single()).data : null;
+  const newStudentStatus = await isNewStudent(studentId, term?.start_date);
   const totalAmount = newStudentStatus ? feeStructure.new_student_total : feeStructure.returning_student_total;
 
   const payload = {
@@ -637,11 +867,13 @@ app.post('/api/admin/invoices', adminAuth, asyncHandler(async (req, res) => {
   const { data, error } = await supabase
     .from('invoices')
     .insert([payload])
-    .select('*, student(*), fee_structure(*), term(*)')
+    .select('*')
     .single();
 
   if (error) throw error;
-  res.status(201).json(mapInvoiceWithAcademicTerm(normalize(data)));
+
+  const [invoiceWithRelations] = await fetchInvoicesWithRelations({ invoiceIds: [data.id] });
+  res.status(201).json(mapInvoiceWithAcademicTerm(invoiceWithRelations));
 }));
 
 app.put('/api/admin/invoices/:id', adminAuth, asyncHandler(async (req, res) => {
@@ -669,7 +901,8 @@ app.delete('/api/admin/invoices/:id', adminAuth, asyncHandler(async (req, res) =
 }));
 
 app.post('/api/admin/payments', adminAuth, asyncHandler(async (req, res) => {
-  const { invoiceId, amountPaid, paymentMethod, transactionReference, recordedBy, bankName, receiptNumber, paidByName, paidDate } = req.body;
+  const { invoiceId, amountPaid, paymentMethod, transactionReference, recordedBy, bankName, receiptNumber: incomingReceiptNumber, paidByName, paidDate } = req.body;
+  let receiptNumber = incomingReceiptNumber;
 
   if (!invoiceId || amountPaid === undefined || amountPaid === null) {
     return res.status(400).json({ error: 'invoiceId and amountPaid are required' });
@@ -686,7 +919,7 @@ app.post('/api/admin/payments', adminAuth, asyncHandler(async (req, res) => {
   }
 
   if (!receiptNumber) {
-    return res.status(400).json({ error: 'Receipt number is required' });
+    receiptNumber = generateReceiptNumber();
   }
 
   const currentAmountPaid = invoice.amount_paid || 0;
@@ -744,13 +977,8 @@ app.post('/api/admin/notifications/payment-received', adminAuth, asyncHandler(as
 }));
 
 app.get('/api/admin/payments', adminAuth, asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
-    .from('payments')
-    .select('*, invoice(student(*), term(*))')
-    .order('payment_date', { ascending: false });
-
-  if (error) throw error;
-  res.json(normalize(data));
+  const payments = await fetchPaymentsWithInvoiceRelations();
+  res.json(payments);
 }));
 
 app.get('/api/admin/invoices/:invoiceId/payments', adminAuth, asyncHandler(async (req, res) => {
@@ -894,62 +1122,40 @@ app.get('/api/admin/stats', adminAuth, asyncHandler(async (req, res) => {
 }));
 
 app.get('/api/director/students', directorAuth, asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
-    .from('students')
-    .select('*, invoices(*, payments(*), term(*), fee_structure(*))')
-    .order('admission_number', { ascending: true });
-
-  if (error) throw error;
-  res.json(normalize(data));
+  const students = await fetchStudentsWithInvoices();
+  res.json(students);
 }));
 
 app.get('/api/director/invoices', directorAuth, asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
-    .from('invoices')
-    .select('*, student(*), term(*), fee_structure(*), payments(*)')
-    .order('created_at', { ascending: false });
-
-  if (error) throw error;
-  res.json(normalize(data).map(mapInvoiceWithAcademicTerm));
+  const invoices = await fetchInvoicesWithRelations();
+  res.json(invoices.map(mapInvoiceWithAcademicTerm));
 }));
 
 app.get('/api/director/payments', directorAuth, asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
-    .from('payments')
-    .select('*, invoice(student(*), term(*))')
-    .order('payment_date', { ascending: false });
-
-  if (error) throw error;
-  res.json(normalize(data));
+  const payments = await fetchPaymentsWithInvoiceRelations();
+  res.json(payments);
 }));
 
 app.get('/api/director/notifications', directorAuth, asyncHandler(async (req, res) => {
   const sevenDaysAgo = new Date();
   sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
-  const { data, error } = await supabase
-    .from('payments')
-    .select('*, invoice(student(*), term(*))')
-    .gte('payment_date', sevenDaysAgo.toISOString())
-    .order('payment_date', { ascending: false });
-
-  if (error) throw error;
-  res.json(normalize(data));
+  const payments = await fetchPaymentsWithInvoiceRelations();
+  const filtered = payments.filter((payment) => new Date(payment.paymentDate || payment.createdAt) >= sevenDaysAgo);
+  res.json(filtered);
 }));
 
 app.get('/api/director/summary', directorAuth, asyncHandler(async (req, res) => {
   const studentsResp = await supabase.from('students').select('*');
-  const invoicesResp = await supabase.from('invoices').select('*, term(*)');
-  const paymentsResp = await supabase.from('payments').select('*, invoice(student(*), term(*))');
+  const invoices = await fetchInvoicesWithRelations();
+  const payments = await fetchPaymentsWithInvoiceRelations();
 
-  if (studentsResp.error || invoicesResp.error || paymentsResp.error) {
+  if (studentsResp.error) {
     throw new Error('Failed to build director summary');
   }
 
   const students = normalize(studentsResp.data || []);
-  const invoices = normalize(invoicesResp.data || []);
-  const payments = normalize(paymentsResp.data || []);
-
+  
   const totalStudents = students.length;
   const totalBoarders = students.filter((student) => student.boardingStatus).length;
   const totalBusUsers = students.filter((student) => student.takesSchoolBus).length;

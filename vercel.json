@@ -1,6 +1,5 @@
 {
-  "version": 3,
-  "name": "albayyan-school-app",
+  "version": 2,
   "builds": [
     {
       "src": "client/package.json",
@@ -15,9 +14,6 @@
     {
       "src": "/api/(.*)",
       "dest": "/api/index.js"
-    },
-    {
-      "handle": "filesystem"
     },
     {
       "src": "/(.*)",

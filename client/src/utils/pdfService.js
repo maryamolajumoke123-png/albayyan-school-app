@@ -127,6 +127,19 @@ export const generateInvoicePDF = (invoice, student, feeStructure) => {
  */
 export const generatePaymentReceiptPDF = (payment, student, invoice) => {
   const doc = new jsPDF()
+  const safeStudent = student || {}
+  const safeInvoice = invoice || {}
+  const safePayment = payment || {}
+  const studentName = `${safeStudent.firstName || ''} ${safeStudent.lastName || ''}`.trim() || 'Student'
+  const studentAdmission = safeStudent.admissionNumber || 'N/A'
+  const studentClass = safeStudent.classLevel || safeStudent.level || 'N/A'
+  const invoiceId = safeInvoice.id || safePayment.invoiceId || 'N/A'
+  const paymentDate = safePayment.paymentDate || safePayment.createdAt || new Date().toISOString()
+  const paymentAmount = Number(safePayment.amountPaid ?? safePayment.amount ?? 0)
+  const paymentMethod = safePayment.paymentMethod || 'N/A'
+  const bankName = safePayment.bankName || 'N/A'
+  const transactionRef = safePayment.transactionReference || safePayment.transactionRef || 'N/A'
+  const invoiceTerm = safeInvoice.term?.name || safeInvoice.term || 'School Fees'
   
   // Header
   doc.setFont('helvetica', 'bold')
@@ -145,9 +158,9 @@ export const generatePaymentReceiptPDF = (payment, student, invoice) => {
   
   doc.setFont('helvetica', 'normal')
   doc.setFontSize(10)
-  doc.text(`Receipt #: ${payment.id || 'N/A'}`, 20, 50)
-  doc.text(`Date: ${new Date(payment.paymentDate).toLocaleDateString()}`, 20, 56)
-  doc.text(`Invoice #: ${invoice.id}`, 20, 62)
+  doc.text(`Receipt #: ${safePayment.receiptNumber || safePayment.id || 'N/A'}`, 20, 50)
+  doc.text(`Date: ${new Date(paymentDate).toLocaleDateString()}`, 20, 56)
+  doc.text(`Invoice #: ${invoiceId}`, 20, 62)
   
   // Student information
   doc.setFont('helvetica', 'bold')
@@ -156,9 +169,9 @@ export const generatePaymentReceiptPDF = (payment, student, invoice) => {
   
   doc.setFont('helvetica', 'normal')
   doc.setFontSize(10)
-  doc.text(`Name: ${student.firstName} ${student.lastName}`, 20, 82)
-  doc.text(`Admission #: ${student.admissionNumber}`, 20, 88)
-  doc.text(`Class: ${student.level || 'N/A'}`, 20, 94)
+  doc.text(`Name: ${studentName}`, 20, 82)
+  doc.text(`Admission #: ${studentAdmission}`, 20, 88)
+  doc.text(`Class: ${studentClass}`, 20, 94)
   
   // Payment details table
   doc.setFont('helvetica', 'bold')
@@ -167,7 +180,7 @@ export const generatePaymentReceiptPDF = (payment, student, invoice) => {
   
   const tableData = [
     ['Description', 'Amount (₦)'],
-    ['School Fees - ' + invoice.term, `₦${payment.amount?.toLocaleString() || 0}`]
+    [`${invoiceTerm} - Payment`, `₦${paymentAmount.toLocaleString()}`]
   ]
   
   doc.autoTable({
@@ -192,14 +205,14 @@ export const generatePaymentReceiptPDF = (payment, student, invoice) => {
   const totalY = doc.lastAutoTable.finalY + 10
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(12)
-  doc.text(`AMOUNT PAID: ₦${payment.amount?.toLocaleString() || 0}`, 20, totalY)
+  doc.text(`AMOUNT PAID: ₦${paymentAmount.toLocaleString()}`, 20, totalY)
   
   // Payment method
   doc.setFont('helvetica', 'normal')
   doc.setFontSize(10)
-  doc.text(`Payment Method: ${payment.paymentMethod || 'N/A'}`, 20, totalY + 8)
-  doc.text(`Bank: ${payment.bankName || 'N/A'}`, 20, totalY + 14)
-  doc.text(`Transaction Ref: ${payment.transactionRef || 'N/A'}`, 20, totalY + 20)
+  doc.text(`Payment Method: ${paymentMethod}`, 20, totalY + 8)
+  doc.text(`Bank: ${bankName}`, 20, totalY + 14)
+  doc.text(`Transaction Ref: ${transactionRef}`, 20, totalY + 20)
   
   // Receipt confirmation
   doc.setFont('helvetica', 'bold')
@@ -219,7 +232,7 @@ export const generatePaymentReceiptPDF = (payment, student, invoice) => {
   doc.text(`Generated: ${new Date().toLocaleString()}`, 105, 270, { align: 'center' })
   
   // Download
-  doc.save(`Receipt-${student.firstName}_${student.lastName}_${payment.id}.pdf`)
+  doc.save(`Receipt-${studentName.replace(/\s+/g, '_')}_${invoiceId}.pdf`)
 }
 
 /**
